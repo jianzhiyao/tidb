@@ -9650,6 +9650,7 @@ func (s *testIntegrationSuite) TestBuiltinFuncJSONMergePatch_InColumn(c *C) {
 		// Invalid json text
 		{[2]interface{}{`{"a":1}`, `[1]}`}, nil, false, mysql.ErrInvalidJSONText},
 	}
+
 	tk.MustExec(`use test;`)
 	tk.MustExec(`drop table if exists t;`)
 	tk.MustExec("CREATE TABLE t ( `id` INT NOT NULL AUTO_INCREMENT, `j` json NULL, `vc` VARCHAR ( 5000 ) NULL, PRIMARY KEY ( `id` ) );")
