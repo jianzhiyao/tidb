@@ -1089,7 +1089,10 @@ func (b *builtinJSONMergePatchSig) evalJSON(row chunk.Row) (res json.BinaryJSON,
 	if err != nil {
 		return
 	}
-	return *tmpRes, false, nil
+	if tmpRes != nil {
+		res = *tmpRes
+	}
+	return res, false, nil
 }
 
 type jsonMergePreserveFunctionClass struct {
