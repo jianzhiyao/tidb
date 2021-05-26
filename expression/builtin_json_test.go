@@ -1097,8 +1097,6 @@ func (s *testEvaluatorSuite) TestJSONMergePatch(c *C) {
 		{[]interface{}{`{"title":"Goodbye!","author":{"givenName":"John","familyName":"Doe"},"tags":["example","sample"],"content":"This will be unchanged"}`, `{"title":"Hello!","phoneNumber":"+01-123-456-7890","author":{"familyName":null},"tags":["example"]}`}, `{"title":"Hello!","author":{"givenName":"John"},"tags":["example"],"content":"This will be unchanged","phoneNumber":"+01-123-456-7890"}`, true},
 
 		// From mysql Example Test Cases
-		{[]interface{}{nil, `{"a":1}`}, nil, true},
-		{[]interface{}{`{"a":1}`, nil}, nil, true},
 		{[]interface{}{`{"a":"foo"}`, `true`}, `true`, true},
 		{[]interface{}{`{"a":"foo"}`, `false`}, `false`, true},
 		{[]interface{}{`{"a":"foo"}`, `123`}, `123`, true},

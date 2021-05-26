@@ -9684,6 +9684,19 @@ func (s *testIntegrationSuite) TestBuiltinFuncJSONMergePatch_InExpression(c *C) 
 		errCode  int
 	}{
 		// test cases
+		{[]interface{}{nil, `1`}, `1`, true, 0},
+		{[]interface{}{`1`, nil}, nil, true, 0},
+		{[]interface{}{nil, `null`}, `null`, true, 0},
+		{[]interface{}{`null`, nil}, nil, true, 0},
+		{[]interface{}{nil, `true`}, `true`, true, 0},
+		{[]interface{}{`true`, nil}, nil, true, 0},
+		{[]interface{}{nil, `false`}, `false`, true, 0},
+		{[]interface{}{`false`, nil}, nil, true, 0},
+		{[]interface{}{nil, `[1,2,3]`}, `[1,2,3]`, true, 0},
+		{[]interface{}{`[1,2,3]`, nil}, nil, true, 0},
+		{[]interface{}{nil, `{"a":"foo"}`}, nil, true, 0},
+		{[]interface{}{`{"a":"foo"}`, nil}, nil, true, 0},
+
 		{[]interface{}{`{"a":"foo"}`, `{"a":null}`, `{"b":"123"}`, `{"c":1}`}, `{"b":"123","c":1}`, true, 0},
 		{[]interface{}{`{"a":"foo"}`, `{"a":null}`, `{"c":1}`}, `{"c":1}`, true, 0},
 		{[]interface{}{`{"a":"foo"}`, `{"a":null}`, `true`}, `true`, true, 0},
@@ -9698,13 +9711,13 @@ func (s *testIntegrationSuite) TestBuiltinFuncJSONMergePatch_InExpression(c *C) 
 
 		{[]interface{}{nil, `null`, `{"a":1}`, `[1,2,3]`}, `[1,2,3]`, true, 0},
 		{[]interface{}{`null`, nil, `{"a":1}`, `[1,2,3]`}, `[1,2,3]`, true, 0},
-		{[]interface{}{`null`,  `{"a":1}`, nil, `[1,2,3]`}, `[1,2,3]`, true, 0},
-		{[]interface{}{`null`,  `{"a":1}`, `[1,2,3]`, nil}, nil, true, 0},
+		{[]interface{}{`null`, `{"a":1}`, nil, `[1,2,3]`}, `[1,2,3]`, true, 0},
+		{[]interface{}{`null`, `{"a":1}`, `[1,2,3]`, nil}, nil, true, 0},
 
 		{[]interface{}{nil, `null`, `{"a":1}`, `true`}, `true`, true, 0},
 		{[]interface{}{`null`, nil, `{"a":1}`, `true`}, `true`, true, 0},
-		{[]interface{}{`null`,  `{"a":1}`, nil, `true`}, `true`, true, 0},
-		{[]interface{}{`null`,  `{"a":1}`, `true`, nil}, nil, true, 0},
+		{[]interface{}{`null`, `{"a":1}`, nil, `true`}, `true`, true, 0},
+		{[]interface{}{`null`, `{"a":1}`, `true`, nil}, nil, true, 0},
 
 		// non-object last item
 		{[]interface{}{"true", "false", "[]", "{}", "null"}, "null", true, 0},
