@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/pingcap/parser/mysql"
+	"github.com/pingcap/tidb/session/txninfo"
 	"github.com/pingcap/tidb/sessionctx/stmtctx"
 	"github.com/pingcap/tidb/store/tikv/oracle"
 	"github.com/pingcap/tidb/util/execdetails"
@@ -32,6 +33,7 @@ type ProcessInfo struct {
 	ID               uint64
 	User             string
 	Host             string
+	Port             string
 	DB               string
 	Digest           string
 	Plan             interface{}
@@ -67,10 +69,16 @@ func (pi *ProcessInfo) ToRowForShow(full bool) []interface{} {
 	if len(pi.DB) > 0 {
 		db = pi.DB
 	}
+	var host string
+	if pi.Port != "" {
+		host = fmt.Sprintf("%s:%s", pi.Host, pi.Port)
+	} else {
+		host = pi.Host
+	}
 	return []interface{}{
 		pi.ID,
 		pi.User,
-		pi.Host,
+		host,
 		db,
 		mysql.Command2Str[pi.Command],
 		t,
@@ -154,6 +162,7 @@ func serverStatus2Str(state uint16) string {
 // kill statement rely on this interface.
 type SessionManager interface {
 	ShowProcessList() map[uint64]*ProcessInfo
+	ShowTxnList() []*txninfo.TxnInfo
 	GetProcessInfo(id uint64) (*ProcessInfo, bool)
 	Kill(connectionID uint64, query bool)
 	KillAllConnections()

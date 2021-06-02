@@ -62,6 +62,12 @@ type Table struct {
 	Version       uint64
 	Name          string
 	ExtendedStats *ExtendedStatsColl
+	// TblInfoUpdateTS is the UpdateTS of the TableInfo used when filling this struct.
+	// It is the schema version of the corresponding table. It is used to skip redundant
+	// loading of stats, i.e, if the cached stats is already update-to-date with mysql.stats_xxx tables,
+	// and the schema of the table does not change, we don't need to load the stats for this
+	// table again.
+	TblInfoUpdateTS uint64
 }
 
 // ExtendedStatsItem is the cached item of a mysql.stats_extended record.
@@ -136,9 +142,10 @@ func (t *Table) Copy() *Table {
 		newHistColl.Indices[id] = idx
 	}
 	nt := &Table{
-		HistColl: newHistColl,
-		Version:  t.Version,
-		Name:     t.Name,
+		HistColl:        newHistColl,
+		Version:         t.Version,
+		Name:            t.Name,
+		TblInfoUpdateTS: t.TblInfoUpdateTS,
 	}
 	if t.ExtendedStats != nil {
 		newExtStatsColl := &ExtendedStatsColl{
@@ -198,13 +205,13 @@ func (t *Table) ColumnByName(colName string) *Column {
 }
 
 // GetStatsInfo returns their statistics according to the ID of the column or index, including histogram, CMSketch, TopN and FMSketch.
-func (t *Table) GetStatsInfo(ID int64, isIndex bool) (*Histogram, *CMSketch, *TopN, *FMSketch) {
+func (t *Table) GetStatsInfo(ID int64, isIndex bool) (int64, *Histogram, *CMSketch, *TopN, *FMSketch) {
 	if isIndex {
 		idxStatsInfo := t.Indices[ID]
-		return idxStatsInfo.Histogram.Copy(), idxStatsInfo.CMSketch.Copy(), idxStatsInfo.TopN.Copy(), nil
+		return int64(idxStatsInfo.TotalRowCount()), idxStatsInfo.Histogram.Copy(), idxStatsInfo.CMSketch.Copy(), idxStatsInfo.TopN.Copy(), idxStatsInfo.FMSketch.Copy()
 	}
 	colStatsInfo := t.Columns[ID]
-	return colStatsInfo.Histogram.Copy(), colStatsInfo.CMSketch.Copy(), colStatsInfo.TopN.Copy(), colStatsInfo.FMSketch.Copy()
+	return int64(colStatsInfo.TotalRowCount()), colStatsInfo.Histogram.Copy(), colStatsInfo.CMSketch.Copy(), colStatsInfo.TopN.Copy(), colStatsInfo.FMSketch.Copy()
 }
 
 type tableColumnID struct {
@@ -339,7 +346,7 @@ func (coll *HistColl) GetRowCountByIndexRanges(sc *stmtctx.StatementContext, idx
 	if idx.CMSketch != nil && idx.StatsVer == Version1 {
 		result, err = coll.getIndexRowCount(sc, idxID, indexRanges)
 	} else {
-		result, err = idx.GetRowCount(sc, indexRanges, coll.ModifyCount)
+		result, err = idx.GetRowCount(sc, coll, indexRanges, coll.ModifyCount)
 	}
 	result *= idx.GetIncreaseFactor(coll.Count)
 	return result, errors.Trace(err)
@@ -575,7 +582,7 @@ func (coll *HistColl) getIndexRowCount(sc *stmtctx.StatementContext, idxID int64
 		// on single-column index, use previous way as well, because CMSketch does not contain null
 		// values in this case.
 		if rangePosition == 0 || isSingleColIdxNullRange(idx, ran) {
-			count, err := idx.GetRowCount(sc, []*ranger.Range{ran}, coll.ModifyCount)
+			count, err := idx.GetRowCount(sc, nil, []*ranger.Range{ran}, coll.ModifyCount)
 			if err != nil {
 				return 0, errors.Trace(err)
 			}

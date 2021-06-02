@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -25,6 +24,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/pingcap/errors"
+	tikvcfg "github.com/pingcap/tidb/store/tikv/config"
 )
 
 // CloneConf deeply clones this config.
@@ -109,7 +109,7 @@ func atomicWriteConfig(c *Config, confPath string) (err error) {
 		return err
 	}
 	tmpConfPath := filepath.Join(os.TempDir(), fmt.Sprintf("tmp_conf_%v.toml", time.Now().Format("20060102150405")))
-	if err := ioutil.WriteFile(tmpConfPath, []byte(content), 0666); err != nil {
+	if err := os.WriteFile(tmpConfPath, []byte(content), 0666); err != nil {
 		return errors.Trace(err)
 	}
 	return errors.Trace(os.Rename(tmpConfPath, confPath))
@@ -141,9 +141,9 @@ func FlattenConfigItems(nestedConfig map[string]interface{}) map[string]interfac
 }
 
 func flatten(flatMap map[string]interface{}, nested interface{}, prefix string) {
-	switch nested.(type) {
+	switch nested := nested.(type) {
 	case map[string]interface{}:
-		for k, v := range nested.(map[string]interface{}) {
+		for k, v := range nested {
 			path := k
 			if prefix != "" {
 				path = prefix + "." + k
@@ -155,11 +155,7 @@ func flatten(flatMap map[string]interface{}, nested interface{}, prefix string) 
 	}
 }
 
-// GetTxnScopeFromConfig extract txn_scope default value from config
-func GetTxnScopeFromConfig() string {
-	v, ok := GetGlobalConfig().Labels["zone"]
-	if ok {
-		return v
-	}
-	return DefTxnScope
+// GetTxnScopeFromConfig extracts @@txn_scope value from config
+func GetTxnScopeFromConfig() (bool, string) {
+	return tikvcfg.GetTxnScopeFromConfig()
 }

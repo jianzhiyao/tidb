@@ -22,7 +22,6 @@ import (
 	"github.com/pingcap/tidb/infoschema"
 	"github.com/pingcap/tidb/sessionctx"
 	"github.com/pingcap/tidb/sessionctx/stmtctx"
-	"github.com/pingcap/tidb/sessionctx/variable"
 	"github.com/pingcap/tidb/statistics"
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/sqlexec"
@@ -127,7 +126,7 @@ func (h *Handle) DumpStatsToJSON(dbName string, tableInfo *model.TableInfo, hist
 // DumpStatsToJSONBySnapshot dumps statistic to json.
 func (h *Handle) DumpStatsToJSONBySnapshot(dbName string, tableInfo *model.TableInfo, snapshot uint64) (*JSONTable, error) {
 	pi := tableInfo.GetPartitionInfo()
-	if pi == nil || h.CurrentPruneMode() == variable.DynamicOnly {
+	if pi == nil {
 		return h.tableStatsToJSON(dbName, tableInfo, tableInfo.ID, snapshot)
 	}
 	jsonTbl := &JSONTable{
@@ -144,6 +143,14 @@ func (h *Handle) DumpStatsToJSONBySnapshot(dbName string, tableInfo *model.Table
 			continue
 		}
 		jsonTbl.Partitions[def.Name.L] = tbl
+	}
+	// dump its global-stats if existed
+	tbl, err := h.tableStatsToJSON(dbName, tableInfo, tableInfo.ID, snapshot)
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	if tbl != nil {
+		jsonTbl.Partitions["global"] = tbl
 	}
 	return jsonTbl, nil
 }
@@ -206,6 +213,12 @@ func (h *Handle) LoadStatsFromJSON(is infoschema.InfoSchema, jsonTbl *JSONTable)
 				return errors.Trace(err)
 			}
 		}
+		// load global-stats if existed
+		if globalStats, ok := jsonTbl.Partitions["global"]; ok {
+			if err := h.loadStatsFromJSON(tableInfo, tableInfo.ID, globalStats); err != nil {
+				return errors.Trace(err)
+			}
+		}
 	}
 	return errors.Trace(h.Update(is))
 }
@@ -217,13 +230,15 @@ func (h *Handle) loadStatsFromJSON(tableInfo *model.TableInfo, physicalID int64,
 	}
 
 	for _, col := range tbl.Columns {
-		err = h.SaveStatsToStorage(tbl.PhysicalID, tbl.Count, 0, &col.Histogram, col.CMSketch, col.TopN, col.FMSketch, int(col.StatsVer), 1)
+		// loadStatsFromJSON doesn't support partition table now.
+		err = h.SaveStatsToStorage(tbl.PhysicalID, tbl.Count, 0, &col.Histogram, col.CMSketch, col.TopN, col.FMSketch, int(col.StatsVer), 1, false)
 		if err != nil {
 			return errors.Trace(err)
 		}
 	}
 	for _, idx := range tbl.Indices {
-		err = h.SaveStatsToStorage(tbl.PhysicalID, tbl.Count, 1, &idx.Histogram, idx.CMSketch, idx.TopN, nil, int(idx.StatsVer), 1)
+		// loadStatsFromJSON doesn't support partition table now.
+		err = h.SaveStatsToStorage(tbl.PhysicalID, tbl.Count, 1, &idx.Histogram, idx.CMSketch, idx.TopN, nil, int(idx.StatsVer), 1, false)
 		if err != nil {
 			return errors.Trace(err)
 		}

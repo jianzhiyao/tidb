@@ -14,6 +14,8 @@
 package core
 
 import (
+	"fmt"
+	"strconv"
 	"unsafe"
 
 	"github.com/pingcap/errors"
@@ -28,8 +30,10 @@ import (
 	"github.com/pingcap/tidb/sessionctx/stmtctx"
 	"github.com/pingcap/tidb/statistics"
 	"github.com/pingcap/tidb/table"
+	"github.com/pingcap/tidb/table/tables"
 	"github.com/pingcap/tidb/types"
 	"github.com/pingcap/tidb/util/ranger"
+	"github.com/pingcap/tidb/util/stringutil"
 	"github.com/pingcap/tipb/go-tipb"
 )
 
@@ -74,6 +78,9 @@ type PhysicalTableReader struct {
 
 	// StoreType indicates table read from which type of store.
 	StoreType kv.StoreType
+
+	// BatchCop = true means the cop task in the physical table reader will be executed in batch mode(use in TiFlash only)
+	BatchCop bool
 
 	IsCommonHandle bool
 
@@ -143,6 +150,7 @@ func (p *PhysicalTableReader) Clone() (PhysicalPlan, error) {
 	}
 	cloned.physicalSchemaProducer = *base
 	cloned.StoreType = p.StoreType
+	cloned.BatchCop = p.BatchCop
 	cloned.IsCommonHandle = p.IsCommonHandle
 	if cloned.tablePlan, err = p.tablePlan.Clone(); err != nil {
 		return nil, err
@@ -515,6 +523,35 @@ func (ts *PhysicalTableScan) IsPartition() (bool, int64) {
 	return ts.isPartition, ts.physicalTableID
 }
 
+// ResolveCorrelatedColumns resolves the correlated columns in range access
+func (ts *PhysicalTableScan) ResolveCorrelatedColumns() ([]*ranger.Range, error) {
+	access := ts.AccessCondition
+	if ts.Table.IsCommonHandle {
+		pkIdx := tables.FindPrimaryIndex(ts.Table)
+		idxCols, idxColLens := expression.IndexInfo2PrefixCols(ts.Columns, ts.Schema().Columns, pkIdx)
+		for _, cond := range access {
+			newCond, err := expression.SubstituteCorCol2Constant(cond)
+			if err != nil {
+				return nil, err
+			}
+			access = append(access, newCond)
+		}
+		res, err := ranger.DetachCondAndBuildRangeForIndex(ts.SCtx(), access, idxCols, idxColLens)
+		if err != nil {
+			return nil, err
+		}
+		ts.Ranges = res.Ranges
+	} else {
+		var err error
+		pkTP := ts.Table.GetPkColInfo().FieldType
+		ts.Ranges, err = ranger.BuildTableRange(access, ts.SCtx().GetSessionVars().StmtCtx, &pkTP)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ts.Ranges, nil
+}
+
 // ExpandVirtualColumn expands the virtual column's dependent columns to ts's schema and column.
 func ExpandVirtualColumn(columns []*model.ColumnInfo, schema *expression.Schema,
 	colsInfo []*model.ColumnInfo) []*model.ColumnInfo {
@@ -724,6 +761,7 @@ type PhysicalHashJoin struct {
 	// on which store the join executes.
 	storeTp          kv.StoreType
 	globalChildIndex int
+	mppShuffleJoin   bool
 }
 
 // Clone implements PhysicalPlan interface.
@@ -787,8 +825,7 @@ func NewPhysicalHashJoin(p *LogicalJoin, innerIdx int, useOuterToBuild bool, new
 type PhysicalIndexJoin struct {
 	basePhysicalJoin
 
-	outerSchema *expression.Schema
-	innerTask   task
+	innerTask task
 
 	// Ranges stores the IndexRanges when the inner plan is index scan.
 	Ranges []*ranger.Range
@@ -848,8 +885,12 @@ type PhysicalMergeJoin struct {
 type PhysicalExchangeReceiver struct {
 	basePhysicalPlan
 
-	Tasks   []*kv.MPPTask
-	ChildPf *Fragment
+	Tasks []*kv.MPPTask
+}
+
+// GetExchangeSender return the connected sender of this receiver. We assume that its child must be a receiver.
+func (p *PhysicalExchangeReceiver) GetExchangeSender() *PhysicalExchangeSender {
+	return p.children[0].(*PhysicalExchangeSender)
 }
 
 // PhysicalExchangeSender dispatches data to upstream tasks. That means push mode processing,
@@ -873,9 +914,7 @@ func (p *PhysicalMergeJoin) Clone() (PhysicalPlan, error) {
 		return nil, err
 	}
 	cloned.basePhysicalJoin = *base
-	for _, cf := range p.CompareFuncs {
-		cloned.CompareFuncs = append(cloned.CompareFuncs, cf)
-	}
+	cloned.CompareFuncs = append(cloned.CompareFuncs, p.CompareFuncs...)
 	cloned.Desc = p.Desc
 	return cloned, nil
 }
@@ -1322,4 +1361,78 @@ func NewTableSampleInfo(node *ast.TableSample, fullSchema *expression.Schema, pt
 		FullSchema: fullSchema,
 		Partitions: pt,
 	}
+}
+
+// PhysicalCTE is for CTE.
+type PhysicalCTE struct {
+	physicalSchemaProducer
+
+	SeedPlan  PhysicalPlan
+	RecurPlan PhysicalPlan
+	CTE       *CTEClass
+	cteAsName model.CIStr
+}
+
+// PhysicalCTETable is for CTE table.
+type PhysicalCTETable struct {
+	physicalSchemaProducer
+
+	IDForStorage int
+}
+
+// ExtractCorrelatedCols implements PhysicalPlan interface.
+func (p *PhysicalCTE) ExtractCorrelatedCols() []*expression.CorrelatedColumn {
+	corCols := ExtractCorrelatedCols4PhysicalPlan(p.SeedPlan)
+	if p.RecurPlan != nil {
+		corCols = append(corCols, ExtractCorrelatedCols4PhysicalPlan(p.RecurPlan)...)
+	}
+	return corCols
+}
+
+// AccessObject implements physicalScan interface.
+func (p *PhysicalCTE) AccessObject(normalized bool) string {
+	return fmt.Sprintf("CTE:%s", p.cteAsName.L)
+}
+
+// OperatorInfo implements dataAccesser interface.
+func (p *PhysicalCTE) OperatorInfo(normalized bool) string {
+	return fmt.Sprintf("data:%s", (*CTEDefinition)(p).ExplainID())
+}
+
+// ExplainInfo implements Plan interface.
+func (p *PhysicalCTE) ExplainInfo() string {
+	return p.AccessObject(false) + ", " + p.OperatorInfo(false)
+}
+
+// ExplainID overrides the ExplainID.
+func (p *PhysicalCTE) ExplainID() fmt.Stringer {
+	return stringutil.MemoizeStr(func() string {
+		if p.ctx != nil && p.ctx.GetSessionVars().StmtCtx.IgnoreExplainIDSuffix {
+			return p.TP()
+		}
+		return p.TP() + "_" + strconv.Itoa(p.id)
+	})
+}
+
+// ExplainInfo overrides the ExplainInfo
+func (p *PhysicalCTETable) ExplainInfo() string {
+	return "Scan on CTE_" + strconv.Itoa(p.IDForStorage)
+}
+
+// CTEDefinition is CTE definition for explain.
+type CTEDefinition PhysicalCTE
+
+// ExplainInfo overrides the ExplainInfo
+func (p *CTEDefinition) ExplainInfo() string {
+	if p.RecurPlan != nil {
+		return "Recursive CTE"
+	}
+	return "None Recursive CTE"
+}
+
+// ExplainID overrides the ExplainID.
+func (p *CTEDefinition) ExplainID() fmt.Stringer {
+	return stringutil.MemoizeStr(func() string {
+		return "CTE_" + strconv.Itoa(p.CTE.IDForStorage)
+	})
 }
